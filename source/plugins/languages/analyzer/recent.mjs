@@ -67,7 +67,12 @@ export class RecentAnalyzer extends Analyzer {
       ...await Promise.allSettled(
         commits
           .flatMap(({payload}) => payload.commits)
-          .filter((commit) => commit && filters.text(commit.committer?.email, this.authoring, {debug: false}))
+          .filter((commit) => commit && this.authoring.some(authoring => 
+            commit.committer?.email?.toLocaleLowerCase().includes(authoring.toLocaleLowerCase()) ||
+            commit.committer?.name?.toLocaleLowerCase().includes(authoring.toLocaleLowerCase()) ||
+            commit.author?.email?.toLocaleLowerCase().includes(authoring.toLocaleLowerCase()) ||
+            commit.author?.name?.toLocaleLowerCase().includes(authoring.toLocaleLowerCase())
+          ))
           .map(commit => commit.url)
           .map(async commit => (await this.rest.request(commit)).data),
       ),
