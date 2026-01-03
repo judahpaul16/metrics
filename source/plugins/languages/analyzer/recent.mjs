@@ -30,7 +30,7 @@ export class RecentAnalyzer extends Analyzer {
   async patches() {
     //Fetch commits from recent activity
     this.debug(`fetching patches from last ${this.days || ""} days up to ${this.load || "∞"} events`)
-    const commits = [], pages = Math.ceil((this.load || Infinity) / 100)
+    const pushEvents = [], pages = Math.ceil((this.load || Infinity) / 100)
     if (this.context.mode === "repository") {
       try {
         const {data: {default_branch: branch}} = await this.rest.repos.get(this.context)
@@ -45,7 +45,7 @@ export class RecentAnalyzer extends Analyzer {
     try {
       for (let page = 1; page <= pages; page++) {
         this.debug(`fetching events page ${page}`)
-        commits.push(
+        pushEvents.push(
           ...(await (this.context.mode === "repository" ? this.rest.activity.listRepoEvents(this.context) : this.rest.activity.listEventsForAuthenticatedUser({username: this.login, per_page: 100, page}))).data
             .filter(({type, payload}) => (type === "PushEvent") && ((this.context.mode !== "repository") || ((this.context.mode === "repository") && (payload?.ref?.includes?.(`refs/heads/${this.context.branch}`)))))
             .filter(({actor}) => (this.account === "organization") || (this.context.mode === "repository") ? true : filters.text(actor.login, [this.login], {debug: false}))
@@ -57,34 +57,44 @@ export class RecentAnalyzer extends Analyzer {
     catch {
       this.debug("no more page to load")
     }
-    this.debug(`fetched ${commits.length} commits`)
-    this.results.latest = Math.round((new Date().getTime() - new Date(commits.slice(-1).shift()?.created_at).getTime()) / (1000 * 60 * 60 * 24))
-    this.results.commits = commits.length
+    this.debug(`fetched ${pushEvents.length} push events`)
+    this.results.latest = Math.round((new Date().getTime() - new Date(pushEvents.slice(-1).shift()?.created_at).getTime()) / (1000 * 60 * 60 * 24))
+    
+    //Fetch actual commits from each push event using the repo commits API
+    this.debug("fetching commits from push events")
+    const allCommits = []
+    for (const event of pushEvents) {
+      const [owner, repo] = event.repo.name.split("/")
+      const head = event.payload.head
+      try {
+        //Fetch the commit details directly
+        const {data: commitData} = await this.rest.repos.getCommit({owner, repo, ref: head})
+        if (commitData && this.authoring.some(authoring => 
+          commitData.commit?.committer?.email?.toLocaleLowerCase().includes(authoring.toLocaleLowerCase()) ||
+          commitData.commit?.committer?.name?.toLocaleLowerCase().includes(authoring.toLocaleLowerCase()) ||
+          commitData.commit?.author?.email?.toLocaleLowerCase().includes(authoring.toLocaleLowerCase()) ||
+          commitData.commit?.author?.name?.toLocaleLowerCase().includes(authoring.toLocaleLowerCase()) ||
+          commitData.author?.login?.toLocaleLowerCase().includes(authoring.toLocaleLowerCase())
+        )) {
+          allCommits.push(commitData)
+        }
+      }
+      catch (error) {
+        this.debug(`failed to fetch commit ${head} from ${owner}/${repo}: ${error}`)
+      }
+    }
+    this.debug(`fetched ${allCommits.length} commits`)
+    this.results.commits = allCommits.length
 
-    //Retrieve edited files and filter edited lines (those starting with +/-) from patches
-    this.debug("fetching patches")
-    const patches = [
-      ...await Promise.allSettled(
-        commits
-          .flatMap(({payload}) => payload.commits)
-          .filter((commit) => commit && this.authoring.some(authoring => 
-            commit.committer?.email?.toLocaleLowerCase().includes(authoring.toLocaleLowerCase()) ||
-            commit.committer?.name?.toLocaleLowerCase().includes(authoring.toLocaleLowerCase()) ||
-            commit.author?.email?.toLocaleLowerCase().includes(authoring.toLocaleLowerCase()) ||
-            commit.author?.name?.toLocaleLowerCase().includes(authoring.toLocaleLowerCase())
-          ))
-          .map(commit => commit.url)
-          .map(async commit => (await this.rest.request(commit)).data),
-      ),
-    ]
-      .filter(({status}) => status === "fulfilled")
-      .map(({value}) => value)
+    //Process commits into patches
+    this.debug("processing patches")
+    const patches = allCommits
       .filter(({parents}) => parents.length <= 1)
       .map(({sha, commit: {message, committer}, verification, files}) => ({
         sha,
         name: `${message} (authored by ${committer.name} on ${committer.date})`,
         verified: verification?.verified ?? null,
-        editions: files.map(({filename, patch = ""}) => {
+        editions: (files || []).map(({filename, patch = ""}) => {
           const edition = {
             path: filename,
             added: {lines: 0, bytes: 0},
