@@ -48,7 +48,7 @@ export class RecentAnalyzer extends Analyzer {
         pushEvents.push(
           ...(await (this.context.mode === "repository" ? this.rest.activity.listRepoEvents(this.context) : this.rest.activity.listEventsForAuthenticatedUser({username: this.login, per_page: 100, page}))).data
             .filter(({type, payload}) => (type === "PushEvent") && ((this.context.mode !== "repository") || ((this.context.mode === "repository") && (payload?.ref?.includes?.(`refs/heads/${this.context.branch}`)))))
-            .filter(({actor}) => (this.account === "organization") || (this.context.mode === "repository") ? true : filters.text(actor.login, [this.login], {debug: false}))
+            .filter(({actor}) => (this.account === "organization") || (this.context.mode === "repository") || (actor.login.toLocaleLowerCase() === this.login.toLocaleLowerCase()))
             .filter(({repo: {name: repo}}) => !this.ignore(repo))
             .filter(({created_at}) => ((!this.days) || (new Date(created_at) > new Date(Date.now() - this.days * 24 * 60 * 60 * 1000)))),
         )
